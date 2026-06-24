@@ -1,0 +1,29 @@
+{
+  "name": "HeshamRTL.Localization.Editor",
+  "rootNamespace": "HeshamRTL",
+  "references": [
+    "HeshamRTL.Editor",
+    "Unity.TextMeshPro",
+    "Unity.Localization",
+    "Unity.Localization.Editor"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "HESHAMRTL_LOCALIZATION"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.unity.localization",
+      "expression": "1.0.0",
+      "define": "HESHAMRTL_LOCALIZATION"
+    }
+  ],
+  "noEngineReferences": false
+}

@@ -1,0 +1,10 @@
+{
+  "name": "com.hesham.heshamrtl",
+  "version": "1.3.4",
+  "displayName": "HeshamRTL",
+  "description": "Edit-time Arabic shaping and RTL tool for Unity TextMeshPro. Bake Arabic once, ship with zero runtime code.",
+  "unity": "2020.3",
+  "author": { "name": "Hesham", "url": "https://github.com/7akeem0" },
+  "license": "SEE LICENSE IN LICENSE",
+  "keywords": ["arabic", "rtl", "textmeshpro", "tmp", "localization", "shaping", "bidi"]
+}
