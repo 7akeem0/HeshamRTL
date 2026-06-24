@@ -66,6 +66,8 @@ You need Unity with TextMeshPro installed. Any recent TMP version works, since t
 
 Either way, open `Tools > HeshamRTL > Open` and the fallback font field is already filled in. Everything the tool runs is editor-only, so none of it ever ends up in a shipped build.
 
+**Unity versions.** Tested on Unity 6000.5. Other versions most likely work but are not tested yet. If it does not work on your version, email me at hesham@heshamlocalization.com and I will look into it.
+
 For the full setup walkthrough, including a brand new project that has not imported TMP's essential resources yet, see [`HESHAMRTL_SETUP.md`](HeshamRTL/HESHAMRTL_SETUP.md).
 
 ## Quick start
