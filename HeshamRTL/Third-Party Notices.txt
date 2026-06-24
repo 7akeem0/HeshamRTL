@@ -1,0 +1,20 @@
+Third-Party Notices
+
+This package includes third-party components that are licensed separately from
+HeshamRTL itself. The notices below apply only to those components.
+
+================================================================
+Noto Kufi Arabic (font)
+================================================================
+
+File: HeshamRTL/Fonts/NotoKufiArabic-Regular.ttf
+Copyright 2019-2022 Google LLC. All Rights Reserved.
+
+Licensed under the SIL Open Font License, Version 1.1.
+The full license text is included alongside the font at:
+HeshamRTL/Fonts/OFL.txt
+
+This font is bundled and wired in as a fallback so Arabic glyphs are available.
+Using the font as a fallback places no restriction on the games you make with
+this tool. The SIL Open Font License governs the font file only, and is separate
+from the license that governs the HeshamRTL tool code.
