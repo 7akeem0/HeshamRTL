@@ -20,6 +20,20 @@ TextMeshPro was not built with Arabic in mind. Put an Arabic string into a TMP c
 
 **4. Line order flips when text wraps.** This is the nasty one. Reverse a whole paragraph, let TMP wrap it, and the lines stack from the bottom up, so the reader gets the last line first. HeshamRTL gets around this by asking TMP itself where it will break the text, measuring against the real box at edit time, then reversing each line on its own. The order stays top to bottom, and because it is already baked, it cannot flip again at runtime.
 
+## How this is different
+
+Other tools solve the Arabic problem at runtime. You add a component to every text object, or you call a convert function on every string before you assign it, and the shaping and reordering happen live while the game runs. That works, and for some cases it is the right call. But it means code runs on every frame a text changes, a library ships inside your build, and you wire that code into every place text appears.
+
+HeshamRTL takes the other road. The shaping, the reordering, and the wrapping all happen once, at edit time, and the result is saved as plain baked text. Nothing from the tool ships in your game. There is no component to add, no function to call, no library in your build. You bake, and the Arabic is just there, sitting in your scene or your String Table like any other text.
+
+That choice is the whole point, and it is worth being clear about the trade:
+
+- **Zero runtime.** The tool is editor-only. Your shipped game carries no part of it, so there is nothing to slow down, nothing to debug at runtime, and nothing extra in your build.
+- **No code, no wiring.** You do not touch a single line to make Arabic work. You press a button and the existing TMP boxes, or the Localization table, hold correct Arabic afterward.
+- **It meets the professional localization workflow where it lives.** Baking straight into a Unity Localization String Table, with a snapshot so you can always Unbake, is the path real localized games use, and it is not something a per-object runtime component is built for.
+
+And the honest other side: because the text is baked once for a fixed width and size, a runtime approach is the better fit when your text is genuinely dynamic, a field filled at runtime with an unbounded player or item name, or text that must switch between several languages live. HeshamRTL bakes static Arabic beautifully. It is not trying to be a live string converter, and if that is what you need, a runtime tool is the right tool.
+
 ## Three ways to bake
 
 Depending on how your project stores its text, you pick one of three. They all share the same shaping and wrapping engine underneath. They differ only in where the Arabic comes from and where the baked result goes.
