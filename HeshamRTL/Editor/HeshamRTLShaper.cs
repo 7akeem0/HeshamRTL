@@ -120,15 +120,22 @@ namespace HeshamRTL
 
         struct Cell { public char Letter; public int Form; public Cell(char l, int f){ Letter=l; Form=f; } }
 
-        public static string Shape(string text)
+        public static string Shape(string text) { return Shape(text, null); }
+
+        // F6 — joining-transparent chars: the placeholders of PAIRED rich-text tags
+        // are handled exactly like harakat (no cell of their own; appended to the
+        // previous cell's trailing-attachment list), so a mid-word <b>...</b> no
+        // longer breaks letter joining. Point tags (<sprite>, {N}, <br>, escapes)
+        // stay opaque: they are visible-width or structural and SHOULD break joining.
+        public static string Shape(string text, HashSet<char> transparent)
         {
             if (string.IsNullOrEmpty(text)) return text ?? "";
             var output = new List<Cell>();
-            var harakat = new Dictionary<int, List<char>>();  // output-index -> marks
+            var harakat = new Dictionary<int, List<char>>();  // output-index -> marks + transparent atoms
 
             foreach (char ch in text)
             {
-                if (IsHaraka(ch))
+                if (IsHaraka(ch) || (transparent != null && transparent.Contains(ch)))
                 {
                     int p = output.Count - 1;
                     if (!harakat.TryGetValue(p, out var lst)) { lst = new List<char>(); harakat[p] = lst; }
@@ -182,11 +189,53 @@ namespace HeshamRTL
             for (int k = 0; k < output.Count; k++)
             {
                 var cell = output[k];
-                if (cell.Letter != '\0')
+                if (cell.Letter != '\0' && cell.Letter != '\u200D')   // N2: ZWJ's joining job is done — consume it (reference-identical)
                     sb.Append(cell.Form == NS ? cell.Letter : FORMS[cell.Letter][cell.Form]);
                 if (harakat.TryGetValue(k, out var hs)) foreach (var h in hs) sb.Append(h);
             }
             return sb.ToString();
         }
+
+        // ---- P1: mechanical inverse of the shaping tables ----------------------
+        static Dictionary<char, char> REV;          // presentation form -> base letter
+        static Dictionary<char, string> REVLIG;     // lam-alef ligature form -> lam + alef
+        static void BuildReverse()
+        {
+            if (REV != null) return;
+            var rev = new Dictionary<char, char>();
+            foreach (var kv in FORMS)
+                foreach (char frm in kv.Value)
+                {
+                    if (frm == '\0' || frm == kv.Key) continue;   // skip empty / self-mapping
+                    if (!rev.ContainsKey(frm)) rev[frm] = kv.Key;
+                }
+            var revlig = new Dictionary<char, string>();
+            foreach (var kv in LAMALEF)
+            {
+                if (kv.Value[0] != '\0') revlig[kv.Value[0]] = "\u0644" + kv.Key.ToString();
+                if (kv.Value[1] != '\0') revlig[kv.Value[1]] = "\u0644" + kv.Key.ToString();
+            }
+            REV = rev; REVLIG = revlig;
+        }
+
+        /// <summary>P1 — invert Shape(): presentation forms back to base letters and
+        /// lam-alef ligature forms back to their two letters; harakat, digits, tags,
+        /// islands and every NS char pass through unchanged.</summary>
+        public static string Unshape(string shaped)
+        {
+            BuildReverse();
+            var sb = new StringBuilder(shaped.Length + 8);
+            foreach (char c in shaped)
+            {
+                string two; char one;
+                if (REVLIG.TryGetValue(c, out two)) sb.Append(two);
+                else if (REV.TryGetValue(c, out one)) sb.Append(one);
+                else sb.Append(c);
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>letters that form a lam-alef ligature after a LAM</summary>
+        public static bool IsLamAlefAlef(char c) { return LAMALEF.ContainsKey(c); }
     }
 }

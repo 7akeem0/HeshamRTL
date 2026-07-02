@@ -143,7 +143,13 @@ A short, honest list, all non-blocking:
 
 ## How it works under the hood
 
-The short version is in this README. If you want the real detail, three documents ship inside the tool:
+The short version is in this README. What changed in each release is in
+[`CHANGELOG.md`](CHANGELOG.md) — v1.4.0 is a correctness release: every bake is
+now verified against its source before it is written, baked lines resist
+accidental re-wrapping, "New York" style Latin runs keep their order, tags can
+cross line breaks and sit mid-word, and translator-input quirks (decomposed
+hamza, invisible bidi marks) are normalized away. If you want the real detail,
+three documents ship inside the tool:
 
 - [`HESHAMRTL_SETUP.md`](HeshamRTL/HESHAMRTL_SETUP.md): full setup, the runtime contract, the safety checks, and troubleshooting.
 - [`LOCALIZATION_INTEGRATION.md`](HeshamRTL/LOCALIZATION_INTEGRATION.md): the design behind the String Table baker and the exact Localization API it relies on.

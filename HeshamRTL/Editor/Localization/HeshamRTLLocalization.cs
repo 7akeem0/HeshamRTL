@@ -108,6 +108,8 @@ namespace HeshamRTL
         {
             w._log = "";
             w._anomalies = 0;
+            w._sessionHarakat.Clear();
+            w._nbspSafeCache.Clear();
             try
             {
                 if (EditorApplication.isPlayingOrWillChangePlaymode) { w.Log("ERROR: exit Play mode before baking tables."); return; }
@@ -159,8 +161,10 @@ namespace HeshamRTL
                 var emitted        = new HashSet<char>();
                 var touchedFonts   = new HashSet<TMP_FontAsset>();
                 var richTextOffBoxes = new HashSet<TMP_Text>();
-                int bakedCount = 0, rebakedCount = 0;
+                int bakedCount = 0, rebakedCount = 0, failedGuard = 0;
                 int skippedNoEntry = 0, skippedNoBackup = 0, ltrCount = 0, autoSizeOn = 0;
+                var work = new List<LocWork>();                                   // PASS 1 output
+                var preForms = new Dictionary<TMP_FontAsset, HashSet<char>>();    // font -> needed forms (F7)
 
                 int undoGroup = Undo.GetCurrentGroup();
                 Undo.SetCurrentGroupName("HeshamRTL: bake Arabic String Table(s)");
@@ -224,40 +228,60 @@ namespace HeshamRTL
                             var usedPua = new HashSet<char>();
                             foreach (char c in raw) if (c >= '\uE000' && c <= '\uF8FF') usedPua.Add(c);
 
-                            string bakedText;
-                            try { bakedText = w.BakeValue(narrow.Box, raw, emitted, kv.Key.Name, usedPua); }   // <-- the v1.2 engine
-                            catch (Exception ex)
+                            // PASS 1 (F7): defer the bake — record the work item and the forms this
+                            // value will emit, so every fallback is wired BEFORE any measurement.
+                            work.Add(new LocWork { Table = arTable, Entry = entry, Raw = raw, Cur = cur,
+                                                   IsRebake = isRebake, Box = narrow.Box, Key = kv.Key.Name,
+                                                   Code = code, UsedPua = usedPua });
+                            if (narrow.Box.font != null)
                             {
-                                w.Log($"  ERROR baking key '{Trunc(kv.Key.Name)}' [{code}]: {ex.Message} — skipped (original is safe).");
-                                continue;
+                                HashSet<char> f;
+                                if (!preForms.TryGetValue(narrow.Box.font, out f)) { f = new HashSet<char>(); preForms[narrow.Box.font] = f; }
+                                HeshamRTLWindow.CollectForms(raw, usedPua, f, w._sessionHarakat);
                             }
 
-                            // Right-alignment is PER-LOCALE here. A LocalizeStringEvent shares ONE box across
-                            // EVERY locale (it only swaps the box's text value), so forcing the box to Right
-                            // would right-align English, French and every other language shown in that box too.
-                            // Instead embed <align=right> in the ARABIC VALUE only: only the Arabic entry is
-                            // baked, so only it carries the tag; other locales keep the box's default alignment.
-                            // The tag goes at the very FRONT, OUTSIDE the per-line reversal (it is a block
-                            // control tag, not visual text). Idempotent — a re-bake derives it fresh from the
-                            // clean snapshot — and reversible: the snapshot holds the raw (no tag), so Unbake
-                            // restores a clean original. Gated by the same "Set alignment to Right" toggle.
-                            if (w._setRightAlignment)
-                            {
-                                bakedText = ApplyAlignRight(bakedText);
-                                if (!narrow.Box.richText) richTextOffBoxes.Add(narrow.Box);
-                            }
-
-                            if (bakedText != cur)
-                            {
-                                Undo.RecordObject(arTable, "HeshamRTL: bake " + kv.Key.Name);
-                                entry.Value = bakedText;
-                                EditorUtility.SetDirty(arTable);
-                            }
-                            if (isRebake) rebakedCount++; else bakedCount++;
-                            if (narrow.Box.font != null) touchedFonts.Add(narrow.Box.font);
-                            if (narrow.Box.enableAutoSizing) autoSizeOn++;
                         }
                     }
+                }
+
+                // PASS 1 done — wire every needed fallback BEFORE any measurement (F7).
+                foreach (var kvF in preForms) w.PreflightFont(kvF.Key, kvF.Value);
+
+                // PASS 2 — measure + bake + write, fail-closed per entry (F8).
+                foreach (var it in work)
+                {
+                    string bakedText;
+                    try { bakedText = w.BakeValue(it.Box, it.Raw, emitted, it.Key, it.UsedPua); }   // <-- the v1.2 engine
+                    catch (HeshamRTLGuardException gex)
+                    {
+                        failedGuard++;
+                        w.Log($"  FAILED (guard) key '{Trunc(it.Key)}' [{it.Code}]: {gex.Message} — skipped (original is safe).");
+                        continue;
+                    }
+                    catch (Exception ex)
+                    {
+                        w.Log($"  ERROR baking key '{Trunc(it.Key)}' [{it.Code}]: {ex.Message} — skipped (original is safe).");
+                        continue;
+                    }
+
+                    // Right-alignment stays PER-LOCALE: the tag is embedded in the Arabic VALUE
+                    // only (front-of-string, idempotent, snapshot-reversible); the shared box is
+                    // never touched. Full rationale in LOCALIZATION_INTEGRATION.md §5.1.
+                    if (w._setRightAlignment)
+                    {
+                        bakedText = ApplyAlignRight(bakedText);
+                        if (!it.Box.richText) richTextOffBoxes.Add(it.Box);
+                    }
+
+                    if (bakedText != it.Cur)
+                    {
+                        Undo.RecordObject(it.Table, "HeshamRTL: bake " + it.Key);
+                        it.Entry.Value = bakedText;
+                        EditorUtility.SetDirty(it.Table);
+                    }
+                    if (it.IsRebake) rebakedCount++; else bakedCount++;
+                    if (it.Box.font != null) touchedFonts.Add(it.Box.font);
+                    if (it.Box.enableAutoSizing) autoSizeOn++;
                 }
 
                 // 3) Persist (only entry VALUES changed -> mark the tables; SharedData is untouched).
@@ -266,7 +290,9 @@ namespace HeshamRTL
                 Undo.CollapseUndoOperations(undoGroup);
 
                 w.Log($"Localization DONE. baked={bakedCount}, re-baked={rebakedCount}, passed-through LTR={ltrCount}, " +
-                    $"no-Arabic-entry skipped={skippedNoEntry}, already-baked-without-snapshot skipped={skippedNoBackup}.");
+                    $"no-Arabic-entry skipped={skippedNoEntry}, already-baked-without-snapshot skipped={skippedNoBackup}, failed={failedGuard}.");
+                if (failedGuard > 0)
+                    w.Log($"!!! {failedGuard} entry(ies) FAILED the loss/duplication gate and were skipped — originals are safe; inspect the keys above.");
                 if (w._anomalies > 0)
                     w.Log($"!!! {w._anomalies} line(s) tripped the loss/duplication/contiguity guard — INSPECT (see warnings above).");
                 if (skippedNoBackup > 0)
@@ -294,10 +320,12 @@ namespace HeshamRTL
                     {
                         var sb = new StringBuilder();
                         foreach (char c in missing) sb.Append($"U+{(int)c:X4} ");
-                        w.Log($"WARNING (R6): {missing.Count} form(s) MISSING from font '{fa.name}' -> tofu: {sb}");
+                        w.Log($"WARNING (R6): {missing.Count} form(s) still MISSING from font '{fa.name}' AFTER pre-flight -> tofu: {sb}");
                         w.HandleFallback(fa, missing);   // shared bundled-font fallback wiring from v1.2
+                        w.Log("  NOTE: these forms were measured without real glyph metrics — wrap may be APPROXIMATE. Fix the font/fallback and RE-BAKE.");
                     }
                     else w.Log($"R6 OK: every emitted form exists in font '{fa.name}'.");
+                    w.CheckHarakaAdvances(fa);           // F13 honesty valve
                 }
 
                 AssetDatabase.Refresh();
@@ -450,6 +478,17 @@ namespace HeshamRTL
         static long SafeId(StringTableEntry e)
         {
             try { return e.KeyId; } catch { return 0; }
+        }
+
+        // deferred bake unit for the two-pass (F7) flow: everything PASS 2 needs.
+        sealed class LocWork
+        {
+            public StringTable Table;
+            public StringTableEntry Entry;
+            public string Raw, Cur, Key, Code;
+            public bool IsRebake;
+            public TMP_Text Box;
+            public HashSet<char> UsedPua;
         }
 
         // (collection-guid, key-name) identity for grouping boxes per key.

@@ -43,7 +43,7 @@ namespace HeshamRTL
         const string AssetFileName = "NotoKufiArabic SDF.asset";
 
         // ---- Generation parameters (mirror "Font Asset Creator" exactly) -------
-        //   Character Set = Unicode Range (Hex):  20-7E, FB50-FDFF, FE70-FEFF
+        //   Character Set = Unicode Range (Hex):  20-7E, A0, FB50-FDFF, FE70-FEFF
         //   Render mode SDFAA, 90pt sampling, 9px padding, 1024x1024, multi-atlas on.
         const int  SamplingPointSize = 90;
         const int  AtlasPadding      = 9;
@@ -54,6 +54,7 @@ namespace HeshamRTL
         static readonly (uint lo, uint hi)[] Ranges =
         {
             (0x0020, 0x007E),   // Basic Latin (ASCII printable)
+            (0x00A0, 0x00A0),   // No-break space (X4 inversion-proof spaces)
             (0xFB50, 0xFDFF),   // Arabic Presentation Forms-A
             (0xFE70, 0xFEFF),   // Arabic Presentation Forms-B
         };
@@ -242,7 +243,7 @@ namespace HeshamRTL
             {
                 Debug.LogWarning("[HeshamRTL] This TMP version lacks TMP_FontAsset.CreateFontAsset. " +
                     "One-time fallback: Window > TextMeshPro > Font Asset Creator on " + TtfFileName +
-                    " (Unicode Range 20-7E,FB50-FDFF,FE70-FEFF), save next to the ttf as '" + AssetFileName +
+                    " (Unicode Range 20-7E,A0,FB50-FDFF,FE70-FEFF), save next to the ttf as '" + AssetFileName +
                     "'. The window then auto-resolves it.");
                 SessionState.SetBool(SessionDoneKey, true);
             }

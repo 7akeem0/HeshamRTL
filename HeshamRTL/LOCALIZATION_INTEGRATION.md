@@ -87,8 +87,11 @@ always undoable back to the exact source.)
 
 ## 5. Reuse of the v1.2 surface
 
-Nothing about shaping/reversal/wrapping is re-implemented. The integration is a
-`partial class` over `HeshamRTLWindow` and calls the shipped core directly:
+Nothing about shaping/reversal/wrapping is re-implemented. Since v1.3.4 the
+integration is a **satellite editor assembly** (`Editor/Localization/`, own asmdef
+with `defineConstraints: HESHAMRTL_LOCALIZATION` + `versionDefines`) that plugs
+into the window via a registration hook (`HeshamRTLWindow.LocalizationSection`,
+with `InternalsVisibleTo`) and calls the shipped core directly:
 
 - `BakeValue(box, value, emitted, keyForLog, usedPua)` — page/`<br>` split → Protect → Shape →
   **MeasureWrap (TMP)** → BalanceSpans → VisualOrder → SwapPairs → Restore.
@@ -134,8 +137,9 @@ the package and therefore always compiles — keeps that define in sync:
   define the instant the package starts to be removed, *before* the recompile that would
   otherwise try to build the `#if`'d code against the now-missing assemblies.
 
-The integration compiles into the predefined **Editor** assembly (same place TMP is used from),
-so it reuses `BakeValue` with no assembly-definition restructuring. *Manual recovery* — only if
+The integration compiles into its own satellite editor assembly (see §5), whose asmdef
+`defineConstraints` add a second, structural guard: without the package the assembly does
+not even load, so `#if` and assembly existence protect independently. *Manual recovery* — only if
 the package was deleted straight off disk so neither safeguard ran — remove
 `HESHAMRTL_LOCALIZATION` from **Project Settings → Player → Scripting Define Symbols**.
 

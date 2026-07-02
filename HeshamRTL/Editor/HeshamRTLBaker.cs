@@ -31,7 +31,15 @@ namespace HeshamRTL
         const int PUA = 0xE000;
 
         // Inline tags / runtime variables / escapes -> protected atomic units.
-        static readonly Regex TagRe   = new Regex(@"<[^>]+>|\{[^{}]*\}|\\.", RegexOptions.Compiled);
+        // F4 (T1): only TAG-SHAPED <...> is protected — optional /, then a Latin
+        // letter or # (TMP color shorthand), a name, optional =value or space-led
+        // attributes, optional self-close. "< \u0628 >" (math around Arabic) is TEXT.
+        // F11: braces match with bounded nesting (depth 3 covers Smart Strings), so
+        // "{player{0}}" is ONE atomic unit; deeper/unbalanced braces fail the floor.
+        static readonly Regex TagRe   = new Regex(
+            @"</?[A-Za-z#][A-Za-z0-9_\-]*(?:=[^>]*|\s+[^>]*)?/?>" +
+            @"|\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}" +
+            @"|\\.", RegexOptions.Compiled);
         // Leading name of a tag: <b> -> b ,  </color> -> color
         static readonly Regex NameRe  = new Regex(@"^</?([A-Za-z]+)", RegexOptions.Compiled);
         // Latin / number islands kept in internal (LTR) order: config.json, v1.2, 50%
@@ -56,6 +64,37 @@ namespace HeshamRTL
             public char Open;
             public char Close;
             public SpanPair(char open, char close) { Open = open; Close = close; }
+        }
+
+        // ---- F12: deterministic input hygiene at the bake boundary -------------
+        // (a) NFC normalization: decomposed hamza/madda sequences from CAT tools and
+        //     macOS become the composed letters, so shaping always emits the proper
+        //     dedicated forms. (b) strip bidi control marks — the baked output IS the
+        //     bidi result; leftover controls are dead weight or measurement poison.
+        // (c) strip zero-width break opportunities (ZWSP, soft hyphen) — they would
+        //     re-introduce exactly the internal break points X4 eliminates.
+        // ZWNJ (U+200C) and ZWJ (U+200D) are PRESERVED: they are shaping-semantic.
+        static readonly HashSet<char> StripSet = new HashSet<char>
+        {
+            '\u200E', '\u200F', '\u061C',                   // LRM, RLM, ALM
+            '\u202A', '\u202B', '\u202C', '\u202D', '\u202E', // embeddings/overrides
+            '\u2066', '\u2067', '\u2068', '\u2069',         // isolates
+            '\u200B', '\u00AD',                             // ZWSP, soft hyphen
+        };
+
+        public static string CleanInput(string s, out int stripped, out bool renormalized)
+        {
+            stripped = 0; renormalized = false;
+            if (string.IsNullOrEmpty(s)) return s ?? "";
+            string norm = s.Normalize(NormalizationForm.FormC);
+            renormalized = !string.Equals(norm, s, StringComparison.Ordinal);
+            var sb = new StringBuilder(norm.Length);
+            foreach (char c in norm)
+            {
+                if (StripSet.Contains(c)) { stripped++; continue; }
+                sb.Append(c);
+            }
+            return sb.ToString();
         }
 
         // ---- guards -----------------------------------------------------------
@@ -183,7 +222,12 @@ namespace HeshamRTL
         //  - PUA placeholders: atomic   - Latin/number islands: atomic
         //  - everything else: one grapheme cluster (base + trailing harakat)
         //  reverse token order; mirror single-char bracket clusters.
-        public static string VisualOrder(string line)
+        public static string VisualOrder(string line) { return VisualOrder(line, null); }
+
+        // pairedPua: the OPEN/CLOSE placeholder chars of stateful spans. Only these
+        // block LTR-run coalescing (SwapPairs must keep them addressable as free
+        // atoms). Passing null = conservative mode (every PUA blocks the merge).
+        public static string VisualOrder(string line, HashSet<char> pairedPua)
         {
             var toks = new List<KeyValuePair<string, bool>>(); // (value, isCluster)
             int pos = 0, n = line.Length;
@@ -208,6 +252,38 @@ namespace HeshamRTL
                 toks.Add(new KeyValuePair<string, bool>(line.Substring(start, pos - start), true));
             }
 
+            // F2 — LTR run coalescing (UAX #9): neutrals BETWEEN two LTR islands
+            // resolve LTR, so [island][neutral clusters][island]... merges into ONE
+            // atomic token that keeps its internal order ("New York" stays "New York").
+            // Neutral = a cluster with no Arabic letter, no haraka, and no PUA
+            // placeholder; any PUA between islands blocks the merge (placeholders
+            // must stay addressable for SwapPairs/Restore). Neutrals NOT between two
+            // islands keep the old behavior. Runs after wrap measurement, so line
+            // break positions are unaffected.
+            var merged = new List<KeyValuePair<string, bool>>(toks.Count);
+            int t = 0;
+            while (t < toks.Count)
+            {
+                if (!IsIslandTok(toks[t])) { merged.Add(toks[t]); t++; continue; }
+                var run = new StringBuilder(toks[t].Key);
+                int consumedUpTo = t;
+                int probe = t + 1;
+                while (true)
+                {
+                    int m = probe; var neut = new StringBuilder();
+                    while (m < toks.Count && IsNeutralTok(toks[m], pairedPua)) { neut.Append(toks[m].Key); m++; }
+                    if (m > probe && m < toks.Count && IsIslandTok(toks[m]))
+                    {
+                        run.Append(neut.ToString()); run.Append(toks[m].Key);
+                        consumedUpTo = m; probe = m + 1;
+                    }
+                    else break;
+                }
+                merged.Add(new KeyValuePair<string, bool>(run.ToString(), false));
+                t = consumedUpTo + 1;
+            }
+            toks = merged;
+
             var outSb = new StringBuilder();
             for (int i = toks.Count - 1; i >= 0; i--)
             {
@@ -220,6 +296,35 @@ namespace HeshamRTL
                     outSb.Append(val);
             }
             return outSb.ToString();
+        }
+
+        // F2 helpers — token classification for the coalescing pass above.
+        static bool IsIslandTok(KeyValuePair<string, bool> tok)
+        {
+            if (tok.Value) return false;                       // grapheme cluster
+            string v = tok.Key;
+            return !(v.Length == 1 && v[0] >= '\uE000' && v[0] <= '\uF8FF');   // not a PUA atom
+        }
+        static bool IsNeutralTok(KeyValuePair<string, bool> tok, HashSet<char> pairedPua)
+        {
+            string v = tok.Key;
+            if (!tok.Value)                                    // island or PUA atom
+            {
+                // A POINT placeholder ({N}, <sprite>, icon glyph, <br>) is bidi-neutral:
+                // between two LTR islands it resolves LTR and may merge. A PAIRED half
+                // must stay a free atom for SwapPairs; unknown (null) = block all PUA.
+                if (v.Length == 1 && v[0] >= '\uE000' && v[0] <= '\uF8FF')
+                    return pairedPua != null && !pairedPua.Contains(v[0]);
+                return false;                                  // a real island is not a neutral
+            }
+            foreach (char c in v)
+            {
+                if (c >= '\uE000' && c <= '\uF8FF') return false;
+                if ((c >= '\u0600' && c <= '\u06FF') || (c >= '\u0750' && c <= '\u077F') ||
+                    (c >= '\u08A0' && c <= '\u08FF') ||
+                    (c >= '\uFB50' && c <= '\uFDFF') || (c >= '\uFE70' && c <= '\uFEFF')) return false;
+            }
+            return true;
         }
 
         // ---- swap open/close inside each pair (port of Sutoor._swap_pairs) ----
@@ -248,11 +353,15 @@ namespace HeshamRTL
         {
             if (IsBaked(logical)) return logical;     // already baked
             if (!HasArabic(logical)) return logical;  // pure LTR -> leave as-is
+            int _hyg; bool _nfc;
+            logical = CleanInput(logical, out _hyg, out _nfc);   // F12 hygiene
             Dictionary<char, string> map;
             List<SpanPair> pairs;
             string prot = Protect(logical, usedPua, out map, out pairs);
-            string shaped = HeshamRTLShaper.Shape(prot);
-            string vis = VisualOrder(shaped);
+            var transparent = new HashSet<char>();                    // F6: paired halves only
+            foreach (var p in pairs) { transparent.Add(p.Open); transparent.Add(p.Close); }
+            string shaped = HeshamRTLShaper.Shape(prot, transparent);
+            string vis = VisualOrder(shaped, transparent);
             if (pairs.Count > 0) vis = SwapPairs(vis, pairs);
             return Restore(vis, map);
         }

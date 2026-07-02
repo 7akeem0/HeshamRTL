@@ -296,8 +296,11 @@ baked text, since the baker only emits glyphs in those ranges.
   wrap across measured lines.
 - Plus the Silksong-style tag set: `<page>`, `<hpage>`, `<page=X>`, `<br>`,
   `{0}`, `{1}`, `<sprite=…>` (atomic).
-- Paired spans must be **properly nested** and **within one `<br>` segment** (see
-  §9). Tags belong at word/phrase boundaries, not mid-word.
+- Paired spans must be **properly nested**. Since v1.4 they may freely cross
+  `<br>` segments (protection is page-level: a crossing span closes at the break
+  and reopens on the next line) and may sit **mid-word** (paired-tag placeholders
+  are joining-transparent, so letters stay connected). Point tags (`<sprite>`,
+  `{N}`) still break joining by design — they occupy visible width.
 - One target box per run.
 - Line-based YAML parsing for `KEY: "value"`; escaped quotes inside values are
   protected as atoms.
@@ -441,8 +444,13 @@ The baking is the unchanged v1.2 core — `BakeValue` → Protect / Shape / **Me
 / BalanceSpans / VisualOrder / SwapPairs / Restore — plus the `{N}` "Fat-8" buffer, R5/R6,
 the bundled fallback-font wiring, and the NoWrap / auto-size warnings. Because it measures
 on the **real** narrowest box, the box's true width/font/size/margins drive the wrap
-(strictly better than a width number). The integration lives in a `partial class` over
-`HeshamRTLWindow`, so it calls that surface directly with no duplication.
+(strictly better than a width number). Since v1.3.4 the integration lives in its own
+**satellite editor assembly** (`Editor/Localization/`, its own asmdef with
+`defineConstraints: HESHAMRTL_LOCALIZATION` + `versionDefines` on
+`com.unity.localization`) and plugs into the window through a registration hook
+(`HeshamRTLWindow.LocalizationSection`, granted access via `InternalsVisibleTo`).
+Same surface, no duplication — and the assembly simply does not load when the
+package is absent, so a hard assembly-load failure is impossible.
 
 ### 13.4 Corruption is impossible (the governing rule)
 The tool is generic — many translators work straight in the Arabic table with no separate
@@ -463,7 +471,9 @@ So no matter how the translator works, their translation **cannot be lost**.
 `HeshamRTLLocalizationBootstrap.cs` (which has **no** dependency on the package) probes
 whether Localization is installed and toggles the `HESHAMRTL_LOCALIZATION` define
 accordingly — adding it when the package is present, clearing it the moment the package is
-removed (before the recompile). You never touch a setting. *Manual recovery, only if the
+removed (before the recompile). Together with the satellite asmdef's `defineConstraints`
+(see 13.3) this is a two-layer guard: the define gates compilation AND the assembly never
+loads without the package. You never touch a setting. *Manual recovery, only if the
 package was deleted straight off disk:* remove `HESHAMRTL_LOCALIZATION` from **Project
 Settings → Player → Scripting Define Symbols** (editable even while scripts fail to compile).
 
@@ -491,3 +501,59 @@ Settings → Player → Scripting Define Symbols** (editable even while scripts 
 - A box whose width is **resolved only at runtime** by a Layout Group reads as width 0 at
   edit time and is skipped with a warning (give it a fixed width, or open it laid out).
 - Keys with no Arabic entry yet are skipped (translate first, then bake).
+
+
+## 14. Revision 5 (v1.3 → v1.4) — the correctness release
+
+Every change below is enforced in code and proven by an external test harness
+(byte-exact assertions against arabic-reshaper 3.0.0 and a simulated TMP,
+including fault-injection tests). Behavior highlights:
+
+### 14.1 Fail-closed baking (the guard is now a gate)
+The loss/duplication self-check no longer just logs: if a measured value cannot
+be rebuilt from its source with zero loss and zero duplication, the value is
+**not written** (file path: passthrough; scene: box untouched; Localization:
+entry skipped — original safe). Summaries report `failed=N`. Measurement also
+neutralizes anything that can clip `textInfo` (Ellipsis/Truncate overflow,
+`maxVisible*`, `firstVisibleCharacter`) and restores it afterwards.
+
+### 14.2 Round-trip verification (every bake is proven)
+After each bake the pipeline is inverted step by step — un-shape, un-reverse,
+un-balance, restore recompute + placeholder-leak scan — and compared with the
+source. Any mismatch fails closed with the step and position named. A baked
+line is either mathematically equal to its source, or it is not written.
+
+### 14.3 Inversion-proof spaces (NBSP hardening, on by default)
+Internal spaces in baked lines become no-break spaces (identical rendering).
+If a box is ever left with wrapping ON by mistake, the line offers no break
+opportunity: the worst case is a cosmetic overshoot, never the bottom-to-top
+line inversion. Auto-disabled per font (with a Log note) when NBSP is missing
+or its width differs from the space; the bundled font now includes U+00A0.
+Toggle: "Inversion-proof spaces (NBSP)" in the window.
+
+### 14.4 Honest measurement
+- Fallback fonts are wired **before** the first measurement (pre-flight), so
+  wrap metrics are never taken against missing glyphs; if forms are still
+  missing afterwards the log says wrap may be APPROXIMATE and asks for a re-bake.
+- Harakat are zero-width in the wrap decision (they no longer inflate line
+  width and cause premature wrapping); each mark travels with its base letter.
+  If a font gives harakat a real advance, a named warning says so.
+
+### 14.5 Text correctness fixes
+- Multi-token LTR runs keep their order: "New York", "Half Life 2", "10 000",
+  "v1.2 beta" no longer reverse (UAX #9 run coalescing; paired-tag placeholders
+  still block the merge so styling stays addressable).
+- Paired tags may cross `<br>` and sit mid-word (see §7 limitations update).
+- `< ب >` and other math/text uses of `<` `>` are TEXT now: only tag-shaped
+  `<name …>` sequences are protected (letters/#, optional attributes, optional
+  self-close). A protected tag whose body contains Arabic is flagged in the Log.
+- `{player{0}}`-style nested placeholders are one atomic unit (depth ≤ 3);
+  unbalanced or deeper nesting fails closed with a named message.
+- Input hygiene at the bake boundary: NFC normalization (decomposed hamza/madda
+  input bakes identical to composed) and stripping of invisible bidi controls,
+  ZWSP and soft hyphens — counted per key in the Log. ZWNJ is preserved; ZWJ is
+  used for joining and then consumed, byte-identical to arabic-reshaper.
+- YAML: `KEY: "value" # comment` lines are baked with the comment preserved
+  verbatim; escaped quotes resolve correctly; the file's own newline style (LF
+  or CRLF) is kept; unquoted Arabic values get a named diagnostic. CSV keeps
+  the file's final newline.

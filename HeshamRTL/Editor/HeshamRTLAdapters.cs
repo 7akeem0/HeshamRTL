@@ -63,21 +63,29 @@ namespace HeshamRTL
     {
         public override string Id { get { return "YAML"; } }
 
-        //  KEY: "value"  -> g1 = prefix incl. opening quote, g2 = value, g3 = closing quote + ws
+        //  KEY: "value"  [# comment]  -> g1 = prefix incl. opening quote,
+        //  g2 = value (escape-aware, non-greedy: stops at the TRUE closing quote,
+        //  even when a trailing comment contains a quote), g3 = closing quote +
+        //  whitespace + optional #comment — written back VERBATIM (F9).
         static readonly Regex LineRe =
-            new Regex("^(\\s*[^:#\\s][^:]*:\\s*\")(.*)(\"\\s*)$", RegexOptions.Compiled);
+            new Regex("^(\\s*[^:#\\s][^:]*:\\s*\")((?:\\\\.|[^\"\\\\])*)(\"\\s*(?:#.*)?)$", RegexOptions.Compiled);
         // a KEY: "…  that opens a quote but has no closing quote on the same line
         static readonly Regex OpensQuoteNoClose =
-            new Regex("^\\s*[^:#\\s][^:]*:\\s*\"[^\"]*$", RegexOptions.Compiled);
+            new Regex("^\\s*[^:#\\s][^:]*:\\s*\"(?:\\\\.|[^\"\\\\])*$", RegexOptions.Compiled);
+        // any KEY: line (for the F9 diagnostic on unquoted Arabic values)
+        static readonly Regex KeyLineRe =
+            new Regex("^\\s*[^:#\\s][^:]*:", RegexOptions.Compiled);
 
         struct Rec { public bool IsValue; public string Raw; public string Prefix; public string Suffix; public LocValue Val; }
         readonly List<Rec> _recs = new List<Rec>();
+        string _newline = "\r\n";      // F9: dominant newline of the SOURCE file, re-emitted as-is
 
         public override List<LocValue> Parse(string raw)
         {
             _recs.Clear();
             ParseWarnings.Clear();
             var values = new List<LocValue>();
+            _newline = raw.Contains("\r\n") ? "\r\n" : (raw.IndexOf('\n') >= 0 ? "\n" : "\r\n");
             string[] lines = raw.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
             for (int i = 0; i < lines.Length; i++)
             {
@@ -96,6 +104,9 @@ namespace HeshamRTL
                     if (OpensQuoteNoClose.IsMatch(line))
                         ParseWarnings.Add("line " + (i + 1) + ": opens a quoted value with no closing quote on " +
                                           "the same line — NOT baked (this tool expects one physical line per key).");
+                    else if (KeyLineRe.IsMatch(line) && HeshamRTLBaker.HasArabic(line))
+                        ParseWarnings.Add("line " + (i + 1) + ": Arabic value not in quoted single-line form " +
+                                          "(KEY: \"value\") — skipped (F9 diagnostic).");
                     var r = new Rec();
                     r.IsValue = false; r.Raw = line;
                     _recs.Add(r);
@@ -112,7 +123,7 @@ namespace HeshamRTL
                 Rec r = _recs[i];
                 if (r.IsValue) sb.Append(r.Prefix).Append(r.Val.Baked).Append(r.Suffix);
                 else sb.Append(r.Raw);
-                if (i < _recs.Count - 1) sb.Append("\r\n");
+                if (i < _recs.Count - 1) sb.Append(_newline);   // F9: keep the source file's newline
             }
             return sb.ToString();
         }
@@ -125,6 +136,7 @@ namespace HeshamRTL
 
         char _delim = ',';
         string _newline = "\r\n";
+        bool _hadFinalNewline;
         struct Field { public string Text; public bool Quoted; public LocValue Val; }   // Val != null => bakeable
         readonly List<List<Field>> _grid = new List<List<Field>>();
 
@@ -135,6 +147,7 @@ namespace HeshamRTL
             var values = new List<LocValue>();
             if (raw.Length > 0 && raw[0] == '\uFEFF') raw = raw.Substring(1);   // strip BOM
             _newline = raw.Contains("\r\n") ? "\r\n" : (raw.IndexOf('\n') >= 0 ? "\n" : "\r\n");
+            _hadFinalNewline = raw.Length > 0 && raw[raw.Length - 1] == '\n';    // N1
             _delim = DetectDelimiter(raw);
 
             int n = raw.Length, pos = 0;
@@ -213,6 +226,7 @@ namespace HeshamRTL
                 }
                 if (r < _grid.Count - 1) sb.Append(_newline);
             }
+            if (_hadFinalNewline) sb.Append(_newline);              // N1: keep the file's final newline
             return sb.ToString();
         }
 
