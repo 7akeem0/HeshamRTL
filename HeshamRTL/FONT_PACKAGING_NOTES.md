@@ -3,7 +3,7 @@
 ## What changed
 - **New:** `Editor/HeshamRTLFontBootstrap.cs` — on first import it generates
   `Fonts/NotoKufiArabic SDF.asset` from the bundled `NotoKufiArabic-Regular.ttf`
-  (Unicode ranges `20-7E, FB50-FDFF, FE70-FEFF`, render mode **SDFAA**) and pins it
+  (Unicode ranges `20-7E, A0, FB50-FDFF, FE70-FEFF`, render mode **SDFAA**) and pins it
   to a **stable GUID** (`fe09dc87ba65fe43dc21ba09fe87dc65`).
 - **New:** `Fonts/NotoKufiArabic-Regular.ttf.meta` — pins the ttf's GUID
   (`ab12cd34ef56ab78cd90ef12ab34cd56`) so the generated asset's source reference is

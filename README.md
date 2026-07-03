@@ -102,9 +102,9 @@ The component that displays baked text at runtime must have wrapping turned off.
 
 Set `textWrappingMode` to `NoWrap` (or `enableWordWrapping = false` on older TMP). That is the whole rule. If you remember one thing from this entire document, remember this.
 
-Here is why it matters. The tool already worked out where every line breaks and baked those breaks in. Leave wrapping on, and TMP wraps the already wrapped text a second time, and the line order flips: your reader gets the bottom line first. NoWrap stops that from ever happening. The scene and Localization bakers set NoWrap for you on the boxes they touch. For a file bake, you set it on the display box yourself.
+Here is why it matters. The tool already worked out where every line breaks and baked those breaks in. Leave wrapping on, and TMP tries to wrap the already wrapped text a second time. This used to flip the line order so the reader got the bottom line first. Since v1.4 the tool also turns the spaces inside each baked line into no-break spaces, so an accidental re-wrap finds nowhere to break: the worst that happens is a line running a little past the edge, not a flipped order. NoWrap is still the correct setting and the one rule to follow, but forgetting it is no longer a disaster. The scene and Localization bakers set NoWrap for you on the boxes they touch. For a file bake, you set it on the display box yourself.
 
-One more thing worth knowing. If the box is later resized narrower than what you baked for, a line can run past the edge. That is only cosmetic, and a re-bake fixes it. The flipped line order is the only real failure, and NoWrap is what prevents it.
+One more thing worth knowing. If the box is later resized narrower than what you baked for, a line can run past the edge. That is only cosmetic, and a re-bake fixes it. With the no-break-space hardening described above, this overshoot is now the worst case even if NoWrap is forgotten.
 
 ## What is tested, and what is not
 
@@ -123,7 +123,7 @@ I would rather tell you exactly where this stands than oversell it. Everything b
 
 - A `{N}` placeholder that gets filled at runtime with open-ended text, a player name or an item name rather than a number, can overflow under NoWrap. Baked wrapping freezes the line breaks for one width at one font size, and an injected name can be wider than any space you reserved. The reserve is adjustable, and the tool logs every entry that has a placeholder so you know which ones to watch. But a truly unbounded field is not a good fit for pre-baked wrapping. Give it a fixed font size sized for the worst case, or shape that one field at runtime.
 - The first time a box renders Arabic, if its base font has no Arabic glyphs, you may see a burst of `character not found` warnings in the Console. The fallback font resolves them and the text on screen comes out correct. The Console just is not perfectly quiet yet. It is cosmetic, it only happens at development time, and tidying it up is on the list for later.
-- Paired tags need to be properly nested and to sit inside a single `<br>` segment. Tags belong at word boundaries, not in the middle of a word.
+- Paired tags still need to be properly nested (no overlapping ranges). Since v1.4 a paired span may cross a `<br>` line break (it closes at the break and reopens on the next line) and may sit mid-word without breaking Arabic letter joining.
 - Vertical alignment together with pre-baked wrapping has not been stress tested across every possible box setup yet.
 
 **Not supported in this release. Do not assume these work:**

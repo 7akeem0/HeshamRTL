@@ -25,6 +25,8 @@ HeshamRTL/
   Editor/                            (editor-only code — never ships in a build)
     HeshamRTLShaper.cs
     HeshamRTLBaker.cs
+    HeshamRTLMeasureCore.cs            (pure wrap-measurement + fail-closed guard core)
+    HeshamRTLVerify.cs                 (pure round-trip verification core)
     HeshamRTLWindow.cs
     HeshamRTLAdapters.cs
     HeshamRTLFontBootstrap.cs
@@ -41,10 +43,12 @@ HeshamRTL/
 | File | Role |
 |---|---|
 | `HeshamRTLShaper.cs` | Arabic shaping → presentation forms (lam-alef ligature; harakat kept; Latin/numbers untouched). Tables generated from `arabic-reshaper`. Pure C#. |
-| `HeshamRTLBaker.cs` | Tag **protect + span classify/pair**, per-line visual reversal (grapheme clusters; Latin/number islands kept LTR; brackets mirrored), **BalanceSpans** + **SwapPairs** (paired-tag support), idempotency + no-Arabic guards. Pure C#. |
+| `HeshamRTLBaker.cs` | Tag **protect + span classify/pair** (tag-shaped only, nested-brace aware), per-line visual reversal (grapheme clusters; multi-word Latin/number islands kept LTR; brackets mirrored), **BalanceSpans** + **SwapPairs** (paired-tag support), input hygiene (`CleanInput`), idempotency + no-Arabic guards. Pure C#. |
+| `HeshamRTLMeasureCore.cs` | Pure, engine-agnostic wrap core: builds the measurement string (harakat zero-width; `{N}` Fat-8 reserve), rebuilds wrapped lines from real break indices, and runs the **fail-closed** loss/duplication/contiguity guard. Provable outside Unity. Pure C#. |
+| `HeshamRTLVerify.cs` | Pure **round-trip verification**: inverts shaping, reversal, balancing and restore after every bake and compares with the source; any mismatch fails closed. Pure C#. |
 | `HeshamRTLWindow.cs` | The Editor window. **Apply (Bake)**: reads a YAML/CSV/JSON file (format picked by extension), page/`<br>` segmentation, real TMP wrap measurement, the `{N}` "Fat-8" width buffer, the loss/duplication self-check, R5/R6 safety checks, fallback-font wiring. **Bake active scene (per-box)**: bakes every Arabic `TMP_Text` in the open scene in place, each measured against its own width, set to NoWrap, undoable. **Auto-resolves the bundled font into the "Fallback Arabic font" field.** |
 | `HeshamRTLAdapters.cs` | The decoupled I/O layer (Adapter pattern): `YamlAdapter` (line-oriented, preserves comments/blank lines/formatting), `CsvAdapter` (comma/semicolon/tab auto-detect, RFC-4180 quoting, BOM-tolerant; bakes any cell containing Arabic), `JsonAdapter` (self-contained recursive-descent parser/serializer, nested-aware; bakes any string *value* containing Arabic, never keys). Pure C# — keeps the baker engine-agnostic. |
-| `HeshamRTLFontBootstrap.cs` | Editor-only. On first import, **auto-generates the TMP Font Asset** from the bundled `.ttf` (Unicode ranges `20-7E,FB50-FDFF,FE70-FEFF`, SDFAA) and pins it to a stable GUID. No Font Asset Creator step. |
+| `HeshamRTLFontBootstrap.cs` | Editor-only. On first import, **auto-generates the TMP Font Asset** from the bundled `.ttf` (Unicode ranges `20-7E,A0,FB50-FDFF,FE70-FEFF`, SDFAA) and pins it to a stable GUID. No Font Asset Creator step. |
 | `HeshamRTLLocalization.cs` *(optional)* | Editor-only **Unity Localization** integration (compiles only when `com.unity.localization` is installed). Adds a window section that bakes the Arabic **String Table(s) in place**: harvests each `LocalizeStringEvent`'s entry key + bound TMP box width, bakes each key against its **narrowest** box (via the same v1.2 engine), writes the result back into the table, and snapshots every original first so the bake is fully **reversible** (Unbake). See §13. |
 | `HeshamRTLLocalizationBootstrap.cs` | Editor-only, **always compiles** (no package dependency). Keeps the `HESHAMRTL_LOCALIZATION` compile switch in sync with whether the Localization package is installed, so the integration above turns itself on/off automatically with zero manual steps and zero compile errors. |
 | `NotoKufiArabic-Regular.ttf` | Bundled Arabic font. Its `.meta` pins a stable GUID so the generated asset's source reference is deterministic. Covers ASCII + all forms the baker emits. |
@@ -131,39 +135,59 @@ For every `KEY: "value"` line:
 
 1. **Guards.** If the value is already baked (contains presentation forms) or
    contains no Arabic at all → passed through unchanged.
-2. **Page split.** Split on `<page>`, `<hpage>`, `<page=X>` — kept **verbatim**
+2. **Input hygiene (v1.4).** NFC-normalize the value and strip invisible bidi
+   control marks, zero-width spaces and soft hyphens (counted in the Log). ZWNJ
+   is kept (it breaks joining on purpose); ZWJ is used for joining then consumed.
+3. **Page split.** Split on `<page>`, `<hpage>`, `<page=X>` — kept **verbatim**
    as hard boundaries; each page baked independently.
-3. **Forced lines.** Within a page, split on `<br>`.
-4. **Protect (before measuring).** Replace every tag with a single placeholder
-   char allocated from a PUA codepoint **not used by the file** (so game-icon
-   glyphs in `U+E000–F8FF` are never collided with). Paired rich-text tags
-   (`<b>`, `<i>`, `<color>`, `<size>`, `<link>`, …) are classified open/close and
-   **paired by nesting**; everything else (`<sprite=…>`, `{0}`, `\"`, unmatched
-   halves) is an atomic point tag.
-5. **Shape once.** Convert the segment's Arabic to presentation forms (lam-alef
-   becomes one glyph; harakat preserved; placeholders/Latin/digits untouched).
-6. **Measure real breaks.** Set the shaped text on the target TMP box in
-   naive-LTR with wrapping **ON** and rich-text **OFF**, `ForceMeshUpdate()`, and
-   read the exact break positions TMP will use (same width, same spaces). Tag
-   placeholders are one visible char here, so they never get eaten by the
-   rich-text parser; under the NoWrap contract their width is cosmetic only.
-7. **Rebuild lines safely.** Each wrapped line is reconstructed from the actual
-   per-character **source indices**, with a **loss / duplication / contiguity
-   self-check**; boundary spaces trimmed.
-8. **Balance spans.** A paired span straddling a wrap is **closed at the line end
-   and reopened at the next line start** (Sutoor `_balance_spans`), so the engine
-   never styles across wrong ranges.
-9. **Reverse + swap per line.** Reverse grapheme clusters; keep Latin/number
-   islands (`config.json`, `v1.2`, `50%`) in internal order; mirror brackets;
-   then **swap each pair's open/close** (Sutoor `_swap_pairs`) so positional
-   reversal doesn't leave the close before the open.
-10. **Restore + reassemble.** Restore placeholders → original tags; join lines
+4. **Protect the whole page (before measuring, v1.4).** Replace every tag with a
+   single placeholder char from a PUA codepoint **not used by the file** (so
+   game-icon glyphs in `U+E000–F8FF` are never collided with). Only tag-shaped
+   `<name …>` sequences are protected, so `< ب >` and other text uses of `<`/`>`
+   stay text; a protected tag whose body contains Arabic is flagged in the Log.
+   Nested `{player{0}}`-style placeholders (depth ≤ 3) are one atom; unbalanced
+   or deeper braces fail closed. Paired rich-text tags (`<b>`, `<color>`, …) are
+   classified open/close and **paired by nesting**; `<br>`-class tags become
+   forced line separators; everything else (`<sprite=…>`, `{0}`, …) is an atomic
+   point tag. Protecting the whole page (not each `<br>` segment) is what lets a
+   paired span cross a `<br>`.
+5. **Shape once.** Convert the page's Arabic to presentation forms (lam-alef
+   becomes one glyph; harakat preserved; paired-tag placeholders are
+   joining-transparent so a mid-word tag keeps letters connected;
+   placeholders/Latin/digits untouched).
+6. **Split on forced separators.** Split the shaped text on the `<br>`-class
+   separators from step 4.
+7. **Measure real breaks.** Set each segment on the target TMP box in naive-LTR
+   with wrapping **ON** and rich-text **OFF**, `ForceMeshUpdate()`, and read the
+   exact break positions TMP will use. Fonts are pre-flighted first so metrics
+   are never taken against missing glyphs; harakat are treated as zero-width in
+   the wrap decision (v1.4) so vowelized text does not wrap early. Overflow and
+   visibility settings that could clip measurement are neutralized and restored.
+8. **Rebuild lines safely (fail-closed).** Each wrapped line is reconstructed
+   from the actual per-character **source indices**, with a **loss / duplication
+   / contiguity self-check**; each base character pulls its harakat with it;
+   boundary spaces trimmed (NBSP preserved). If the check trips, the value is
+   **not written** (fail-closed).
+9. **Balance spans.** Feed all lines (forced + measured) into one pass: a paired
+   span straddling a wrap or a `<br>` is **closed at the line end and reopened at
+   the next line start** (Sutoor `_balance_spans`), so styling never crosses
+   wrong ranges.
+10. **Reverse + swap per line.** Reverse grapheme clusters; keep Latin/number
+    islands in internal order — including multi-word runs like "New York" or
+    "10 000", which stay in reading order (v1.4, UAX #9); mirror brackets; then
+    **swap each pair's open/close** (Sutoor `_swap_pairs`).
+11. **Round-trip verify (v1.4).** Invert every step above and compare with the
+    source; any mismatch fails closed with the step and position named. A baked
+    line is either provably equal to its source or it is not written.
+12. **Inversion-proof spaces (v1.4).** Turn the spaces inside each baked line
+    into no-break spaces (auto-disabled per font when unsafe; see §14.3).
+13. **Restore + reassemble.** Restore placeholders → original tags; join lines
     with `<br>`, join pages with their page tags.
-11. **Write.** Only the value is changed; key and structural quotes untouched;
-    **CRLF preserved**; UTF-8 (no BOM).
+14. **Write.** Only the value is changed; key and structural quotes untouched;
+    the source newline style is preserved; UTF-8 (no BOM).
 
-Result: nothing is left for TMP to wrap or shape at runtime, so **line order
-cannot invert**.
+Result: nothing is left for TMP to wrap or shape at runtime, and every written
+line has been verified against its source.
 
 ---
 
@@ -179,10 +203,14 @@ On the component that displays the baked text at runtime:
 - **NoWrap** — `textWrappingMode = TextWrappingModes.NoWrap` (modern TMP) or
   `enableWordWrapping = false` (legacy)
 
-If wrapping is left on, TMP re-wraps the already-wrapped reversed text and the
-**line order inverts**. Undershoot (a line clipping past the edge if the box is
-later resized) is only cosmetic and is fixed by re-baking; inversion is the only
-catastrophic failure, and NoWrap prevents it.
+If wrapping is left on, TMP tries to re-wrap the already-wrapped reversed text.
+Historically this inverted the **line order** — the one catastrophic failure.
+Since v1.4 the NBSP hardening (§14.3) makes internal line spaces non-breaking, so
+an accidental re-wrap finds no break opportunity inside a line: the worst case
+drops to a cosmetic overshoot (a line clipping past the edge), never inversion.
+NoWrap is still the correct, required setting — the scene and Localization bakers
+set it for you — but forgetting it is no longer catastrophic. Undershoot from a
+later resize is cosmetic and fixed by re-baking.
 
 Around measurement the tool saves and restores the target box's text, RTL flag,
 rich-text flag, and wrap setting — those are never left changed. The **one**
@@ -199,7 +227,7 @@ emits, they render as empty boxes (tofu). This is now handled **automatically**:
 
 1. On first import, `HeshamRTLFontBootstrap` generates `NotoKufiArabic SDF`
    from the bundled `.ttf` with **Character Set = Unicode Range (Hex)**
-   `20-7E,FB50-FDFF,FE70-FEFF`, render mode SDFAA — i.e. exactly what you'd enter
+   `20-7E,A0,FB50-FDFF,FE70-FEFF`, render mode SDFAA — i.e. exactly what you'd enter
    in Font Asset Creator, done for you by TMP's engine. (Population mode is
    **Dynamic**, so any glyph outside those ranges still resolves on demand — an
    extra safety net against tofu.)
@@ -220,7 +248,7 @@ any time — your choice is never overwritten. **Use bundled** restores the defa
 **Manual recovery (only if auto-generation can't run** — e.g. a very old TMP
 without `CreateFontAsset`, see §9): *Window > TextMeshPro > Font Asset Creator* →
 Source Font = the bundled ttf → Character Set = Unicode Range (Hex) →
-`20-7E,FB50-FDFF,FE70-FEFF` → Generate → **Save next to the ttf as
+`20-7E,A0,FB50-FDFF,FE70-FEFF` → Generate → **Save next to the ttf as
 `NotoKufiArabic SDF`**. The window then auto-resolves it.
 
 **Want it stripped of the source `.ttf` in builds?** The Dynamic asset references
@@ -240,9 +268,12 @@ baked text, since the baker only emits glyphs in those ranges.
   correct). No abort.
 - **R6 — font tofu + fallback.** Warns about any emitted presentation form
   missing from the target box's base font, then wires the assigned fallback (§7).
-- **Wrap self-check.** Every bake verifies no character is lost, duplicated, or
-  reordered across wrap lines. Anomalies are logged with the key and counted; a
-  final line flags if any key tripped the guard. Inspect those keys.
+- **Wrap self-check (fail-closed since v1.4).** Every bake verifies no character
+  is lost, duplicated, or reordered across wrap lines, and then round-trip
+  verifies the whole result against its source. If anything fails, the value is
+  **not written** (file: passed through unbaked; scene: box untouched;
+  Localization: entry skipped, original safe). Failures are logged with the key
+  and counted (`failed=N`). Inspect those keys.
 - **Multi-line guard.** A `KEY: "…` that opens a quote with no closing quote on
   the same physical line is reported and left un-baked (the format expects one
   line per value).
@@ -265,15 +296,16 @@ baked text, since the baker only emits glyphs in those ranges.
 - **Color/bold lands on the wrong word.** The span open/close pairing assumes
   **properly nested** tags (like valid HTML). Overlapping tags
   (`<b>…<color>…</b>…</color>`) are invalid and not supported.
-- **A `<color>` span loses its color after a hard `<br>`.** Paired spans are
-  balanced **within** a `<br>` segment; a span that opens before a `<br>` and
-  closes after it is auto-closed at the break (safe, never inverts) and its
-  trailing half becomes inert. Keep paired spans inside one `<br>` segment. (Same
-  limitation as Sutoor's cross-`\n` behavior.)
-- **Mid-word tag breaks letter joining.** A tag *inside* a word
-  (`كتا<b>بي`) breaks Arabic joining at that point, because shaping treats a tag
-  boundary like a word boundary. Put paired tags at word/phrase boundaries (the
-  normal case).
+- **A `<color>` span keeps its color across a hard `<br>` (since v1.4).**
+  Protection is page-level now: a span that opens before a `<br>` and closes
+  after it is closed at the break and reopened on the next line, so the color
+  lands on the right words on every line instead of the trailing half going
+  inert. Spans may cross `<br>` freely; they must still be **properly nested**
+  (no overlapping ranges).
+- **A mid-word tag no longer breaks letter joining (since v1.4).** A paired tag
+  *inside* a word (`كتا<b>بي`) keeps Arabic letters connected, because paired-tag
+  placeholders are joining-transparent during shaping. Point tags (`<sprite>`,
+  `{N}`) still break joining by design — they occupy visible width.
 - **`NON-CONTIGUOUS source indices` warning.** TMP reordered characters on a
   line (unexpected in naive-LTR). Paste the log; this is the case to inspect.
 - **Tofu (empty boxes) in-game.** The bundled fallback is normally auto-wired
@@ -543,7 +575,7 @@ Toggle: "Inversion-proof spaces (NBSP)" in the window.
 - Multi-token LTR runs keep their order: "New York", "Half Life 2", "10 000",
   "v1.2 beta" no longer reverse (UAX #9 run coalescing; paired-tag placeholders
   still block the merge so styling stays addressable).
-- Paired tags may cross `<br>` and sit mid-word (see §7 limitations update).
+- Paired tags may cross `<br>` and sit mid-word (see §7 and §10).
 - `< ب >` and other math/text uses of `<` `>` are TEXT now: only tag-shaped
   `<name …>` sequences are protected (letters/#, optional attributes, optional
   self-close). A protected tag whose body contains Arabic is flagged in the Log.
